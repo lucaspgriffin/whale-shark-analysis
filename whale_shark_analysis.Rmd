@@ -618,9 +618,6 @@ gam.check(m_gam_boat)
 # ACF plot
 acf(resid(m_gam_boat), lag.max = 36, main = "ACF - Boat Model")
 
-# Concurvity check
-knitr::kable(round(concurvity(m_gam_boat, full = TRUE), 3), caption = "Concurvity - Boat Model")
-
 # Fitted vs residuals
 fitted_values <- fitted(m_gam_boat)
 residuals <- resid(m_gam_boat)
@@ -802,9 +799,6 @@ gam.check(m_gam_swim)
 
 # ACF plot
 acf(resid(m_gam_swim), main = "ACF - Swimmer Model")
-
-# Concurvity check
-knitr::kable(round(concurvity(m_gam_swim, full = TRUE), 3), caption = "Concurvity - Swimmer Model")
 
 # Fitted vs residuals
 fitted_values_swim <- fitted(m_gam_swim)

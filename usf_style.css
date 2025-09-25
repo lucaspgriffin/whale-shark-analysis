@@ -1,0 +1,56 @@
+/* USF Green Styling */
+h1, h2, h3, h4, h5, h6 {
+  color: #00543c !important;
+  font-weight: bold;
+}
+
+h1 {
+  color: #003c29 !important;
+}
+
+.title {
+  color: #003c29 !important;
+}
+
+a {
+  color: #007a4e !important;
+}
+
+a:hover {
+  color: #00543c !important;
+}
+
+.navbar-default {
+  background-color: #007a4e !important;
+}
+
+.navbar-default .navbar-brand {
+  color: #ffffff !important;
+}
+
+.navbar-default .navbar-nav > li > a {
+  color: #ffffff !important;
+}
+
+.table-striped > tbody > tr:nth-child(odd) > td,
+.table-striped > tbody > tr:nth-child(odd) > th {
+  background-color: #f0f8f5 !important;
+}
+
+.toc-content {
+  border-left: 3px solid #007a4e;
+}
+
+/* Table of contents styling */
+#TOC {
+  border: 1px solid #007a4e;
+}
+
+#TOC ul li a {
+  color: #007a4e !important;
+}
+
+#TOC ul li a:hover {
+  color: #003c29 !important;
+  background-color: #f0f8f5 !important;
+}

@@ -1,0 +1,963 @@
+---
+title: "Whale Shark Tourism Compliance Analysis"
+author: "Hoa T.T. Ninh, Curtice R. Griffin, Rafael de la Para-Venegas, Kimberly L. Ovitz, Andy J. Danylchuk, Lucas P. Griffin"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    number_sections: true
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: show
+    css: usf_style.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+if (!dir.exists("outputs")) dir.create("outputs")
+```
+
+# Load Packages
+
+```{r packages}
+suppressMessages({
+  library(knitr)
+  library(mgcv)
+  library(mgcViz)
+  library(dplyr)
+  library(ggplot2)
+  library(cowplot)
+  library(lubridate)
+  library(viridis)
+})
+```
+
+# Data Loading and Preprocessing
+
+```{r data-prep}
+# Load data
+general22 = read.csv("whale_shark_data/General2022.csv")
+general16 = read.csv("whale_shark_data/General2016.csv")
+boat22 = read.csv("whale_shark_data/Boat2022.csv")
+boat16 = read.csv("whale_shark_data/Boat2016.csv")
+swim22 = read.csv("whale_shark_data/Swimmer2022.csv")
+swim16 = read.csv("whale_shark_data/Swimmer2016.csv")
+infield22 = read.csv("whale_shark_data/Infield_2022.csv")
+infield16_boat = read.csv("whale_shark_data/Infield2016_no_boats.csv")
+
+# Load frequency data for violation and modeling analysis
+encount_boat_2year_fre <- read.csv("whale_shark_data/encount_boat_2year_fre.csv")
+encount_swim_2year_fre <- read.csv("whale_shark_data/encount_swim_2year_fre.csv")
+
+# Adjust boat counts for police/survey boat presence
+adjust_boat_count <- function(df) {
+  df$NO_BOAT_AD <- ifelse(df$POLICE_PRESENCE == "yes" & df$SURVEY_BOAT == "yes",
+                         df$NO_BOAT - 2,
+                         ifelse(df$POLICE_PRESENCE == "yes" | df$SURVEY_BOAT == "yes",
+                                df$NO_BOAT - 1,
+                                df$NO_BOAT))
+  return(df)
+}
+
+general22 <- adjust_boat_count(general22)
+general16 <- adjust_boat_count(general16)
+
+# Remove incomplete cases and outliers
+clean_data <- function(df) {
+  df <- df[complete.cases(df), ]
+  df <- df %>% filter(FOOTAGE_AREA < 100000 & FOOTAGE_AREA > 10000)
+  return(df)
+}
+
+general22 <- clean_data(general22)
+general16 <- clean_data(general16)
+
+# Clean boat and swimmer data
+boat22 <- boat22[complete.cases(boat22), ]
+boat16 <- boat16[complete.cases(boat16), ]
+swim22 <- swim22[complete.cases(swim22), ]
+swim16 <- swim16[complete.cases(swim16), ]
+
+# Convert time formats
+convert_time_format <- function(time_int) {
+  time_str <- sprintf("%04d", time_int)
+  minutes <- substr(time_str, 1, 2)
+  seconds <- substr(time_str, 3, 4)
+  paste0(minutes, ":", seconds)
+}
+
+# Apply time conversion to all datasets
+time_datasets <- list(general22, general16, boat22, boat16, swim22, swim16)
+for(i in seq_along(time_datasets)) {
+  time_datasets[[i]]$V_LENGTH <- sapply(time_datasets[[i]]$V_LENGTH, convert_time_format)
+}
+list2env(setNames(time_datasets, c("general22", "general16", "boat22", "boat16", "swim22", "swim16")), envir = .GlobalEnv)
+```
+
+# Study Effort
+
+```{r flight-duration}
+# Calculate flight durations
+duration_2016 <- general16 %>%
+  mutate(V_LENGTH_SECOND = as.numeric(lubridate::ms(V_LENGTH))) %>%
+  group_by(FLIGHT) %>%
+  summarise(
+    FLIGHT = first(FLIGHT),
+    V_LENGTH_SECOND = first(V_LENGTH_SECOND),
+    .groups = 'drop'
+  ) %>%
+  group_by(FLIGHT) %>%
+  summarise(
+    V_LENGTH_SECOND_FLIGHT = sum(V_LENGTH_SECOND),
+    V_LENGTH_MIN_FLIGHT = sum(V_LENGTH_SECOND)/60,
+    .groups = 'drop'
+  )
+
+duration_2022 <- general22 %>%
+  mutate(V_LENGTH_SECOND = as.numeric(lubridate::ms(V_LENGTH))) %>%
+  group_by(FLIGHT) %>%
+  summarise(
+    FLIGHT = first(FLIGHT),
+    V_LENGTH_SECOND = first(V_LENGTH_SECOND),
+    .groups = 'drop'
+  ) %>%
+  group_by(FLIGHT) %>%
+  summarise(
+    V_LENGTH_SECOND_FLIGHT = sum(V_LENGTH_SECOND),
+    V_LENGTH_MIN_FLIGHT = sum(V_LENGTH_SECOND)/60,
+    .groups = 'drop'
+  )
+
+# Video frame and flight statistics
+video_frame_stats <- data.frame(
+  Year = c("2016", "2022"),
+  Video_Frames = c(nrow(general16), nrow(general22)),
+  Flights = c(nrow(duration_2016), nrow(duration_2022)),
+  Total_Hours = c(sum(duration_2016$V_LENGTH_MIN_FLIGHT)/60, sum(duration_2022$V_LENGTH_MIN_FLIGHT)/60),
+  Mean_Duration = c(mean(duration_2016$V_LENGTH_MIN_FLIGHT), mean(duration_2022$V_LENGTH_MIN_FLIGHT)),
+  SD_Duration = c(sd(duration_2016$V_LENGTH_MIN_FLIGHT), sd(duration_2022$V_LENGTH_MIN_FLIGHT))
+)
+
+knitr::kable(video_frame_stats, digits = 1, caption = "Video Frame and Flight Effort Summary")
+```
+
+# Density and Swimmer to Whale Shark Ratio Analysis
+
+```{r density-calculations}
+# Calculate densities per hectare
+calculate_densities <- function(df) {
+  df %>%
+    mutate(
+      WS_FOOTAGE = NO_WS/(FOOTAGE_AREA*0.0001),
+      BOAT_FOOTAGE = NO_BOAT_AD/(FOOTAGE_AREA*0.0001),
+      SWIMMER_FOOTAGE = NO_SWIMMER/(FOOTAGE_AREA*0.0001)
+    )
+}
+
+general16 <- calculate_densities(general16)
+general22 <- calculate_densities(general22)
+
+# Calculate swimmers per whale shark from whale shark encounters
+WS_2016_swim = swim16 %>%
+  group_by(WS_CODE) %>%
+  summarise(SUM_SWIMMERS_APR = sum(G_NO_SWIM, na.rm = TRUE), .groups = 'drop')
+
+WS_2022_swim = swim22 %>%
+  group_by(WS_CODE) %>%
+  summarise(SUM_SWIMMERS_APR = sum(G_NO_SWIM, na.rm = TRUE), .groups = 'drop')
+
+# Summary statistics and tests
+density_metrics <- c("WS_FOOTAGE", "BOAT_FOOTAGE", "SWIMMER_FOOTAGE")
+metric_names <- c("Whale sharks per hectare", "Boats per hectare", "Swimmers per hectare")
+
+density_results <- data.frame(
+  Metric = metric_names,
+  Year_2016 = sapply(density_metrics, function(x) paste0(round(mean(general16[[x]]), 1), " ± ", round(sd(general16[[x]]), 1))),
+  Year_2022 = sapply(density_metrics, function(x) paste0(round(mean(general22[[x]]), 1), " ± ", round(sd(general22[[x]]), 1))),
+  W_Statistic = sapply(density_metrics, function(x) wilcox.test(general16[[x]], general22[[x]])$statistic),
+  P_Value = sapply(density_metrics, function(x) {
+    p <- wilcox.test(general16[[x]], general22[[x]])$p.value
+    format(p, scientific = TRUE, digits = 3)
+  })
+)
+
+# Add swimmers per whale shark results
+swimmers_ws_test <- wilcox.test(WS_2016_swim$SUM_SWIMMERS_APR, WS_2022_swim$SUM_SWIMMERS_APR)
+swimmers_ws_p <- format(swimmers_ws_test$p.value, scientific = TRUE, digits = 3)
+
+# Combine all results
+all_results <- rbind(
+  density_results,
+  data.frame(
+    Metric = "Swimmers per whale shark",
+    Year_2016 = paste0(round(mean(WS_2016_swim$SUM_SWIMMERS_APR), 1), " ± ", round(sd(WS_2016_swim$SUM_SWIMMERS_APR), 1)),
+    Year_2022 = paste0(round(mean(WS_2022_swim$SUM_SWIMMERS_APR), 1), " ± ", round(sd(WS_2022_swim$SUM_SWIMMERS_APR), 1)),
+    W_Statistic = swimmers_ws_test$statistic,
+    P_Value = swimmers_ws_p
+  )
+)
+
+knitr::kable(all_results, caption = "Density and Violation Comparisons Between Years", row.names = FALSE)
+```
+
+# Logbook Boat Counts
+
+```{r logbook-boats}
+# Boat counts from logbook data
+logbook_2016 <- paste0(round(mean(infield16_boat$NO_BOAT), 1), " ± ", round(sd(infield16_boat$NO_BOAT), 1))
+logbook_2022 <- paste0(round(mean(infield22$Boat_total), 1), " ± ", round(sd(infield22$Boat_total), 1))
+
+# Statistical test
+logbook_test <- wilcox.test(infield16_boat$NO_BOAT, infield22$Boat_total)
+
+logbook_results <- data.frame(
+  Metric = "Logbook boat counts",
+  Year_2016 = logbook_2016,
+  Year_2022 = logbook_2022,
+  Min_2016 = min(infield16_boat$NO_BOAT),
+  Max_2016 = max(infield16_boat$NO_BOAT),
+  Min_2022 = min(infield22$Boat_total),
+  Max_2022 = max(infield22$Boat_total),
+  W_Statistic = logbook_test$statistic,
+  P_Value = format(logbook_test$p.value, scientific = TRUE, digits = 3)
+)
+
+knitr::kable(logbook_results, caption = "Logbook Boat Count Comparisons", row.names = FALSE)
+```
+
+# Violation Patterns
+
+## Boat Distance Violations
+
+```{r boat-distance-violations}
+# Filter distance violations
+boat22_dis <- boat22[boat22$BOAT_VIOLATE != "no violate min dis", ]
+boat16_dis <- boat16[boat16$BOAT_VIOLATE != "no violate min dis", ]
+
+# Violation counts
+violation_summary <- data.frame(
+  Year = c("2016", "2022"),
+  Total_Violations = c(nrow(boat16_dis), nrow(boat22_dis)),
+  Ratio = c(round(nrow(boat16_dis)/nrow(boat22_dis), 1), 1)
+)
+
+knitr::kable(violation_summary, caption = "Boat Distance Violation Counts", row.names = FALSE)
+```
+
+## Swimmer Distance Violations
+
+```{r swimmer-violations}
+# Filter swimmer distance violations
+WS_2022_swim_dist = swim22 %>% filter(SWIM_VIOLATION != "no violate")
+WS_2016_swim_dist = swim16 %>% filter(SWIM_VIOLATION != "no violate")
+
+# Touching violations
+touching_2022 = sum(swim22$NO_TOUCHING, na.rm = TRUE)
+touching_2016 = sum(swim16$NO_TOUCHING, na.rm = TRUE)
+
+# Summary table
+swimmer_violation_summary <- data.frame(
+  Violation_Type = c("Distance violations (< 5m)", "Touching violations"),
+  Year_2016 = c(nrow(WS_2016_swim_dist), touching_2016),
+  Year_2022 = c(nrow(WS_2022_swim_dist), touching_2022),
+  Ratio_2022_to_2016 = c(
+    round(nrow(WS_2022_swim_dist)/nrow(WS_2016_swim_dist), 1),
+    round(touching_2022/touching_2016, 1)
+  )
+)
+
+knitr::kable(swimmer_violation_summary, caption = "Swimmer Violation Counts", row.names = FALSE)
+
+```
+
+## Multiple Boats per Whale Shark
+
+```{r boat-violations}
+# Filter violation data
+boat22_viol <- boat22 %>% filter(BOAT_VIOLATE != "no violate min dis")
+boat16_viol <- boat16 %>% filter(BOAT_VIOLATE != "no violate min dis")
+
+# Calculate boats per whale shark event
+analyze_boat_violations <- function(boat_data) {
+  events_total <- boat_data %>% distinct(EVE) %>% nrow()
+  
+  boats_per_ws <- boat_data %>%
+    group_by(WS_CODE) %>%
+    summarise(EVE = first(EVE), boats_count = n(), .groups = 'drop')
+  
+  multi_boat_events <- boats_per_ws %>%
+    filter(boats_count > 1) %>%
+    distinct(EVE) %>%
+    nrow()
+  
+  return(list(
+    total_events = events_total,
+    multi_boat_events = multi_boat_events,
+    percentage = round((multi_boat_events/events_total)*100, 1)
+  ))
+}
+
+boat_analysis_2022 <- analyze_boat_violations(boat22_viol)
+boat_analysis_2016 <- analyze_boat_violations(boat16_viol)
+
+multi_boat_summary <- data.frame(
+  Year = c("2016", "2022"),
+  Multi_Boat_Events = c(boat_analysis_2016$multi_boat_events, boat_analysis_2022$multi_boat_events),
+  Total_Events = c(boat_analysis_2016$total_events, boat_analysis_2022$total_events),
+  Percentage = c(boat_analysis_2016$percentage, boat_analysis_2022$percentage)
+)
+
+knitr::kable(multi_boat_summary, caption = "Multiple Boats per Whale Shark Events", row.names = FALSE)
+```
+
+## Multiple Swimmers per Whale Shark
+
+```{r swimmer-violation-analysis}
+# Filter swimmer violations
+swim22_viol <- swim22 %>% filter(SWIM_VIOLATION != "no violate")
+swim16_viol <- swim16 %>% filter(SWIM_VIOLATION != "no violate")
+
+# Calculate swimmers per whale shark event
+analyze_swimmer_violations <- function(swim_data) {
+  events_total <- swim_data %>% distinct(EVE) %>% nrow()
+  
+  swimmers_per_ws <- swim_data %>%
+    group_by(WS_CODE) %>%
+    summarise(EVE = first(EVE), swimmers_count = sum(G_NO_SWIM, na.rm = TRUE), .groups = 'drop')
+  
+  multi_swimmer_events <- swimmers_per_ws %>%
+    filter(swimmers_count > 3) %>%
+    distinct(EVE) %>%
+    nrow()
+  
+  return(list(
+    total_events = events_total,
+    multi_swimmer_events = multi_swimmer_events,
+    percentage = round((multi_swimmer_events/events_total)*100, 1),
+    max_swimmers = max(swimmers_per_ws$swimmers_count),
+    mean_swimmers = mean(swimmers_per_ws$swimmers_count),
+    sd_swimmers = sd(swimmers_per_ws$swimmers_count)
+  ))
+}
+
+swimmer_analysis_2022 <- analyze_swimmer_violations(swim22_viol)
+swimmer_analysis_2016 <- analyze_swimmer_violations(swim16_viol)
+
+multi_swimmer_summary <- data.frame(
+  Year = c("2016", "2022"),
+  Multi_Swimmer_Events = c(swimmer_analysis_2016$multi_swimmer_events, swimmer_analysis_2022$multi_swimmer_events),
+  Total_Events = c(swimmer_analysis_2016$total_events, swimmer_analysis_2022$total_events),
+  Percentage = c(swimmer_analysis_2016$percentage, swimmer_analysis_2022$percentage),
+  Max_Swimmers = c(swimmer_analysis_2016$max_swimmers, swimmer_analysis_2022$max_swimmers)
+)
+
+knitr::kable(multi_swimmer_summary, caption = "Multiple Swimmers per Whale Shark Events", row.names = FALSE)
+
+# Swimmers to whale shark ratio from general footage
+general22_SW_WS <- general22 %>% 
+  mutate(SWIM_WS = NO_SWIMMER/NO_WS)
+
+general16_SW_WS <- general16 %>% 
+  mutate(SWIM_WS = NO_SWIMMER/NO_WS)
+
+# Statistical test
+swimmers_ratio_test <- wilcox.test(general16_SW_WS$SWIM_WS, general22_SW_WS$SWIM_WS)
+
+swimmers_ratio_results <- data.frame(
+  Metric = "Swimmers to whale shark ratio",
+  Year_2016 = paste0(round(mean(general16_SW_WS$SWIM_WS), 1), " ± ", round(sd(general16_SW_WS$SWIM_WS), 1)),
+  Year_2022 = paste0(round(mean(general22_SW_WS$SWIM_WS), 1), " ± ", round(sd(general22_SW_WS$SWIM_WS), 1)),
+  W_Statistic = swimmers_ratio_test$statistic,
+  P_Value = format(swimmers_ratio_test$p.value, scientific = TRUE, digits = 3),
+  Fold_Increase = paste0(round(mean(general22_SW_WS$SWIM_WS)/mean(general16_SW_WS$SWIM_WS), 1), "x")
+)
+
+knitr::kable(swimmers_ratio_results, caption = "Swimmers to Whale Shark Ratio Analysis", row.names = FALSE)
+```
+
+# Violation Frequency Analysis
+
+```{r violation-frequency}
+# Filter by year
+boat_freq_2016 <- encount_boat_2year_fre %>% filter(YEAR == "2016")
+boat_freq_2022 <- encount_boat_2year_fre %>% filter(YEAR == "2022")
+swim_freq_2016 <- encount_swim_2year_fre %>% filter(YEAR == "2016")
+swim_freq_2022 <- encount_swim_2year_fre %>% filter(YEAR == "2022")
+
+# Statistical tests
+boat_freq_test <- wilcox.test(boat_freq_2016$FRE_BOAT_VIOLATION_min, boat_freq_2022$FRE_BOAT_VIOLATION_min)
+swim_freq_test <- wilcox.test(swim_freq_2016$FRE_SWIM_VIOLATION_min, swim_freq_2022$FRE_SWIM_VIOLATION_min)
+touch_freq_test <- wilcox.test(swim_freq_2016$FRE_TOUCH_min, swim_freq_2022$FRE_TOUCH_min)
+
+# Frequency analysis results
+frequency_results <- data.frame(
+  Violation_Type = c("Boat distance violations", "Swimmer distance violations", "Touching violations"),
+  Year_2016 = c(
+    paste0(round(mean(boat_freq_2016$FRE_BOAT_VIOLATION_min), 1), " ± ", round(sd(boat_freq_2016$FRE_BOAT_VIOLATION_min), 1)),
+    paste0(round(mean(swim_freq_2016$FRE_SWIM_VIOLATION_min), 1), " ± ", round(sd(swim_freq_2016$FRE_SWIM_VIOLATION_min), 1)),
+    paste0(round(mean(swim_freq_2016$FRE_TOUCH_min), 1), " ± ", round(sd(swim_freq_2016$FRE_TOUCH_min), 1))
+  ),
+  Year_2022 = c(
+    paste0(round(mean(boat_freq_2022$FRE_BOAT_VIOLATION_min), 1), " ± ", round(sd(boat_freq_2022$FRE_BOAT_VIOLATION_min), 1)),
+    paste0(round(mean(swim_freq_2022$FRE_SWIM_VIOLATION_min), 1), " ± ", round(sd(swim_freq_2022$FRE_SWIM_VIOLATION_min), 1)),
+    paste0(round(mean(swim_freq_2022$FRE_TOUCH_min), 1), " ± ", round(sd(swim_freq_2022$FRE_TOUCH_min), 1))
+  ),
+  W_Statistic = c(boat_freq_test$statistic, swim_freq_test$statistic, touch_freq_test$statistic),
+  P_Value = c(
+    format(boat_freq_test$p.value, scientific = TRUE, digits = 3),
+    format(swim_freq_test$p.value, scientific = TRUE, digits = 3),
+    format(touch_freq_test$p.value, scientific = TRUE, digits = 3)
+  )
+)
+
+knitr::kable(frequency_results, caption = "Violation Frequency per Minute Analysis", row.names = FALSE)
+```
+
+# Patrol Boat Effectiveness
+
+```{r patrol-analysis}
+# Patrol presence analysis
+patrol_absent_flights <- sum(infield22$POLICE_INFIELD == "N")
+total_flights_2022 <- nrow(infield22)
+
+patrol_visibility <- data.frame(
+  Metric = "Patrol boat visibility",
+  Absent_Flights = patrol_absent_flights,
+  Total_Flights = total_flights_2022,
+  Percentage_Absent = round((patrol_absent_flights/total_flights_2022)*100, 1)
+)
+
+knitr::kable(patrol_visibility, caption = "Patrol Boat Visibility", row.names = FALSE)
+
+# Video frame visibility analysis
+patrol_presence_general <- general22 %>% 
+  left_join(infield22, by = "FLIGHT") %>%
+  filter(POLICE_PRESENCE == "yes")
+
+video_frame_visibility <- data.frame(
+  Metric = "Patrol boat visible in video frames",
+  Visible_Frames = nrow(patrol_presence_general),
+  Total_Frames = nrow(general22),
+  Percentage = round((nrow(patrol_presence_general)/nrow(general22))*100, 1)
+)
+
+knitr::kable(video_frame_visibility, caption = "Patrol Boat Video Frame Visibility", row.names = FALSE)
+
+# Patrol effectiveness analysis
+patrol_freq_2022 <- encount_boat_2year_fre %>% 
+  filter(YEAR == "2022") %>%
+  left_join(infield22, by = "FLIGHT")
+
+patrol_swim_freq_2022 <- encount_swim_2year_fre %>% 
+  filter(YEAR == "2022") %>%
+  left_join(infield22, by = "FLIGHT")
+
+# Filter by patrol presence
+boat_patrol_present <- patrol_freq_2022 %>% filter(POLICE_INFIELD == "Y")
+boat_patrol_absent <- patrol_freq_2022 %>% filter(POLICE_INFIELD == "N")
+swim_patrol_present <- patrol_swim_freq_2022 %>% filter(POLICE_INFIELD == "Y")
+swim_patrol_absent <- patrol_swim_freq_2022 %>% filter(POLICE_INFIELD == "N")
+
+# Statistical tests for patrol effectiveness
+boat_patrol_test <- wilcox.test(boat_patrol_present$FRE_BOAT_VIOLATION_min, boat_patrol_absent$FRE_BOAT_VIOLATION_min)
+swim_patrol_test <- wilcox.test(swim_patrol_present$FRE_SWIM_VIOLATION_min, swim_patrol_absent$FRE_SWIM_VIOLATION_min)
+touch_patrol_test <- wilcox.test(swim_patrol_present$FRE_TOUCH_min, swim_patrol_absent$FRE_TOUCH_min)
+
+# Patrol effectiveness results
+patrol_effectiveness <- data.frame(
+  Violation_Type = c("Boat distance violations", "Swimmer distance violations", "Touching violations"),
+  Patrol_Present = c(
+    paste0(round(mean(boat_patrol_present$FRE_BOAT_VIOLATION_min), 1), " ± ", round(sd(boat_patrol_present$FRE_BOAT_VIOLATION_min), 1)),
+    paste0(round(mean(swim_patrol_present$FRE_SWIM_VIOLATION_min), 1), " ± ", round(sd(swim_patrol_present$FRE_SWIM_VIOLATION_min), 1)),
+    paste0(round(mean(swim_patrol_present$FRE_TOUCH_min), 1), " ± ", round(sd(swim_patrol_present$FRE_TOUCH_min), 1))
+  ),
+  Patrol_Absent = c(
+    paste0(round(mean(boat_patrol_absent$FRE_BOAT_VIOLATION_min), 1), " ± ", round(sd(boat_patrol_absent$FRE_BOAT_VIOLATION_min), 1)),
+    paste0(round(mean(swim_patrol_absent$FRE_SWIM_VIOLATION_min), 1), " ± ", round(sd(swim_patrol_absent$FRE_SWIM_VIOLATION_min), 1)),
+    paste0(round(mean(swim_patrol_absent$FRE_TOUCH_min), 1), " ± ", round(sd(swim_patrol_absent$FRE_TOUCH_min), 1))
+  ),
+  W_Statistic = c(boat_patrol_test$statistic, swim_patrol_test$statistic, touch_patrol_test$statistic),
+  P_Value = c(
+    format(boat_patrol_test$p.value, scientific = TRUE, digits = 3),
+    format(swim_patrol_test$p.value, scientific = TRUE, digits = 3),
+    format(touch_patrol_test$p.value, scientific = TRUE, digits = 3)
+  )
+)
+
+knitr::kable(patrol_effectiveness, caption = "Patrol Boat Effectiveness Analysis", row.names = FALSE)
+```
+
+# Predictive Modeling
+
+```{r modeling}
+# Prepare data
+encount_boat_2year_fre$DATE <- as.factor(encount_boat_2year_fre$DATE)
+encount_swim_2year_fre$DATE <- as.factor(encount_swim_2year_fre$DATE)
+
+## Boat Violation Models
+
+# Check predictor correlations
+cor_matrix <- cor(encount_boat_2year_fre[, c("SUM_WS_FLIGHT_min", "SUM_SWIM_FLIGHT_min", "SUM_BOAT_FLIGHT_min", "RATIO_WS_SWIM_min")])
+knitr::kable(round(cor_matrix, 3), caption = "Boat Model Predictor Correlations")
+
+# Model 1: All variables with interaction (te) and one smooth (s)
+model_1 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 te(SUM_WS_FLIGHT_min, SUM_BOAT_FLIGHT_min, k = c(3, 4)) + 
+                 s(RATIO_WS_SWIM_min) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 2: Interaction (te) without one smooth (s)
+model_2 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 te(SUM_WS_FLIGHT_min, SUM_BOAT_FLIGHT_min, k = c(3, 4)) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 3: All variables as separate smooths
+model_3 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 s(SUM_WS_FLIGHT_min, k = 3) + 
+                 s(SUM_BOAT_FLIGHT_min, k = 4) + 
+                 s(RATIO_WS_SWIM_min) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 4: Two smooths without interaction (WS and Boats)
+model_4 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 s(SUM_WS_FLIGHT_min, k = 3) + 
+                 s(SUM_BOAT_FLIGHT_min, k = 4) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 5: Two smooths without interaction (WS and Ratio)
+model_5 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 s(SUM_WS_FLIGHT_min, k = 3) + 
+                 s(RATIO_WS_SWIM_min) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 6: Two smooths without interaction (Boats and Ratio)
+model_6 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 s(SUM_BOAT_FLIGHT_min, k = 4) + 
+                 s(RATIO_WS_SWIM_min) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 7: One smooth without interaction (WS only)
+model_7 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 s(SUM_WS_FLIGHT_min, k = 3) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 8: One smooth without interaction (Boats only)
+model_8 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 s(SUM_BOAT_FLIGHT_min, k = 4) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 9: One smooth without interaction (Ratio only)
+model_9 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                 s(RATIO_WS_SWIM_min) + 
+                 s(DATE, bs = "re"), 
+               data = encount_boat_2year_fre,
+               family = Gamma(link = "log"),
+               method = "REML")
+
+# Model 10: Only random effect
+model_10 <- gam(FRE_BOAT_VIOLATION_min ~ 
+                  s(DATE, bs = "re"), 
+                data = encount_boat_2year_fre,
+                family = Gamma(link = "log"),
+                method = "REML")
+
+# List models and create comparison table
+boat_models <- list(model_1, model_2, model_3, model_4, model_5, model_6, model_7, model_8, model_9, model_10)
+
+# Function to check if term is present in model formula
+check_term <- function(model, term_pattern) {
+  formula_str <- as.character(formula(model))[3]
+  ifelse(grepl(term_pattern, formula_str), "X", "")
+}
+
+# Create data-driven model comparison table
+boat_model_info <- data.frame(
+  Model = paste0("Model_", 1:10),
+  "No_of_WS" = sapply(boat_models, function(x) check_term(x, "SUM_WS_FLIGHT_min")),
+  "Ratio_swimmers_per_WS" = sapply(boat_models, function(x) check_term(x, "RATIO_WS_SWIM_min")),
+  "No_of_boats" = sapply(boat_models, function(x) check_term(x, "SUM_BOAT_FLIGHT_min")),
+  "WS_boats_Interaction" = sapply(boat_models, function(x) check_term(x, "te\\(SUM_WS_FLIGHT_min, SUM_BOAT_FLIGHT_min")),
+  "Sampling_day" = sapply(boat_models, function(x) check_term(x, "s\\(DATE")),
+  AIC = round(sapply(boat_models, AIC), digits = 2)
+)
+
+boat_model_info <- boat_model_info %>% arrange(AIC)
+knitr::kable(boat_model_info, caption = "Boat Violation Model Selection (Ordered by AIC)")
+
+# Export to CSV
+write.csv(boat_model_info, "outputs/model_selection_table_boat.csv", row.names = FALSE)
+
+# Selected boat model
+m_gam_boat <- model_2
+```
+
+```{r boat-diagnostics, fig.width=12, fig.height=8}
+# Model diagnostics
+plot(m_gam_boat, pages = 1, residuals = TRUE, rug = TRUE)
+gam.check(m_gam_boat)
+
+# ACF plot
+acf(resid(m_gam_boat), lag.max = 36, main = "ACF - Boat Model")
+
+# Concurvity check
+knitr::kable(round(concurvity(m_gam_boat, full = TRUE), 3), caption = "Concurvity - Boat Model")
+
+# Fitted vs residuals
+fitted_values <- fitted(m_gam_boat)
+residuals <- resid(m_gam_boat)
+
+plot(fitted_values, residuals,
+     xlab = "Fitted Values", ylab = "Residuals",
+     main = "Fitted Values vs Residuals - Boat Model",
+     pch = 16, col = "blue", cex = 0.7)
+abline(h = 0, col = "red", lty = 2, lwd = 2)
+
+# mgcViz diagnostics
+viz_boat <- getViz(m_gam_boat)
+check(viz_boat,
+      a.qq = list(method = "tnorm", a.cipoly = list(fill = "light blue")), 
+      a.respoi = list(size = 0.5), 
+      a.hist = list(bins = 10))
+```
+
+```{r boat-interaction-plot}
+# Create interaction plot for boat model
+SUM_WS_FLIGHT_min_seq <- seq(min(encount_boat_2year_fre$SUM_WS_FLIGHT_min), 
+                             max(encount_boat_2year_fre$SUM_WS_FLIGHT_min), 
+                             length.out = 100)
+SUM_BOAT_FLIGHT_min_seq <- seq(min(encount_boat_2year_fre$SUM_BOAT_FLIGHT_min), 
+                               max(encount_boat_2year_fre$SUM_BOAT_FLIGHT_min), 
+                               length.out = 100)
+
+grid_boat <- expand.grid(SUM_WS_FLIGHT_min = SUM_WS_FLIGHT_min_seq,
+                        SUM_BOAT_FLIGHT_min = SUM_BOAT_FLIGHT_min_seq,
+                        RATIO_WS_SWIM_min = mean(encount_boat_2year_fre$RATIO_WS_SWIM_min),
+                        DATE = factor(levels(encount_boat_2year_fre$DATE)[1]))
+
+pred_boat <- predict.gam(model_2, newdata = grid_boat, type = "link", se.fit = TRUE, exclude = "s(DATE)")
+
+grid_boat$fit_link <- pred_boat$fit
+grid_boat$se.fit <- pred_boat$se.fit
+grid_boat$lower_link <- grid_boat$fit_link - 1.96 * grid_boat$se.fit
+grid_boat$upper_link <- grid_boat$fit_link + 1.96 * grid_boat$se.fit
+
+inverse_link <- family(model_2)$linkinv
+grid_boat$fit_response <- inverse_link(grid_boat$fit_link)
+grid_boat$lower_response <- inverse_link(grid_boat$lower_link)
+grid_boat$upper_response <- inverse_link(grid_boat$upper_link)
+
+plot_interaction_boat <- ggplot(grid_boat, aes(x = SUM_WS_FLIGHT_min, y = SUM_BOAT_FLIGHT_min, fill = fit_response)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted number of boat \nviolations ") +
+  labs(x = "No. of WS", y = "No. of boats") +
+  theme_classic() +
+  theme(legend.position = "top",
+        text = element_text(size = 13),       
+        axis.title = element_text(size = 13), 
+        axis.text = element_text(size = 13))
+
+print(plot_interaction_boat)
+```
+
+## Swimmer Violation Models
+
+```{r swimmer-models}
+# Check predictor correlations
+cor_matrix_swim <- cor(encount_swim_2year_fre[, c("SUM_WS_FLIGHT_min", "SUM_SWIM_FLIGHT_min", "SUM_BOAT_FLIGHT_min", "RATIO_WS_SWIM_min")])
+knitr::kable(round(cor_matrix_swim, 3), caption = "Swimmer Model Predictor Correlations")
+
+# Model 1: All variables with interaction (te) and one smooth (s)
+model_swim_1 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     te(SUM_WS_FLIGHT_min, SUM_SWIM_FLIGHT_min, k = c(4, 4)) + 
+                     s(RATIO_WS_SWIM_min) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 2: Interaction (te) without one smooth (s)
+model_swim_2 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     te(SUM_WS_FLIGHT_min, SUM_SWIM_FLIGHT_min, k = c(4, 4)) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 3: All variables as separate smooths
+model_swim_3 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     s(SUM_WS_FLIGHT_min, k = 4) + 
+                     s(SUM_SWIM_FLIGHT_min, k = 4) + 
+                     s(RATIO_WS_SWIM_min) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 4: Two smooths without interaction (WS and Swimmers)
+model_swim_4 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     s(SUM_WS_FLIGHT_min, k = 4) + 
+                     s(SUM_SWIM_FLIGHT_min, k = 4) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 5: Two smooths without interaction (WS and Ratio)
+model_swim_5 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     s(SUM_WS_FLIGHT_min, k = 4) + 
+                     s(RATIO_WS_SWIM_min) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 6: Two smooths without interaction (Swimmers and Ratio)
+model_swim_6 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     s(SUM_SWIM_FLIGHT_min, k = 4) + 
+                     s(RATIO_WS_SWIM_min) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 7: One smooth without interaction (WS only)
+model_swim_7 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     s(SUM_WS_FLIGHT_min, k = 4) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 8: One smooth without interaction (Swimmers only)
+model_swim_8 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     s(SUM_SWIM_FLIGHT_min, k = 4) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 9: One smooth without interaction (Ratio only)
+model_swim_9 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                     s(RATIO_WS_SWIM_min) + 
+                     s(DATE, bs = "re"), 
+                   data = encount_swim_2year_fre,
+                   family = Gamma(link = "log"),
+                   method = "REML")
+
+# Model 10: Only random effect
+model_swim_10 <- gam(FRE_SWIM_VIOLATION_min ~ 
+                      s(DATE, bs = "re"), 
+                    data = encount_swim_2year_fre,
+                    family = Gamma(link = "log"),
+                    method = "REML")
+
+# List models and create comparison table
+swim_models <- list(model_swim_1, model_swim_2, model_swim_3, model_swim_4, model_swim_5, 
+                   model_swim_6, model_swim_7, model_swim_8, model_swim_9, model_swim_10)
+
+# Create data-driven swimmer model comparison table
+swim_model_info <- data.frame(
+  Model = paste0("Model_", 1:10),
+  "No_of_WS" = sapply(swim_models, function(x) check_term(x, "SUM_WS_FLIGHT_min")),
+  "Ratio_swimmers_per_WS" = sapply(swim_models, function(x) check_term(x, "RATIO_WS_SWIM_min")),
+  "No_of_swimmers" = sapply(swim_models, function(x) check_term(x, "SUM_SWIM_FLIGHT_min")),
+  "WS_swimmers_Interaction" = sapply(swim_models, function(x) check_term(x, "te\\(SUM_WS_FLIGHT_min, SUM_SWIM_FLIGHT_min")),
+  "Sampling_day" = sapply(swim_models, function(x) check_term(x, "s\\(DATE")),
+  AIC = round(sapply(swim_models, AIC), digits = 2)
+)
+
+swim_model_info <- swim_model_info %>% arrange(AIC)
+knitr::kable(swim_model_info, caption = "Swimmer Violation Model Selection (Ordered by AIC)")
+
+# Export to CSV
+write.csv(swim_model_info, "outputs/model_selection_table_swimmer.csv", row.names = FALSE)
+
+# Selected swimmer model
+m_gam_swim <- model_swim_1
+```
+
+```{r swimmer-diagnostics, fig.width=12, fig.height=8}
+# Model diagnostics
+plot(m_gam_swim, pages = 1, residuals = TRUE, rug = TRUE)
+gam.check(m_gam_swim)
+
+# ACF plot
+acf(resid(m_gam_swim), main = "ACF - Swimmer Model")
+
+# Concurvity check
+knitr::kable(round(concurvity(m_gam_swim, full = TRUE), 3), caption = "Concurvity - Swimmer Model")
+
+# Fitted vs residuals
+fitted_values_swim <- fitted(m_gam_swim)
+residuals_swim <- resid(m_gam_swim)
+
+plot(fitted_values_swim, residuals_swim,
+     xlab = "Fitted Values", ylab = "Residuals",
+     main = "Fitted Values vs Residuals - Swimmer Model",
+     pch = 16, col = "blue", cex = 0.7)
+abline(h = 0, col = "red", lty = 2, lwd = 2)
+
+# mgcViz diagnostics
+viz_swim <- getViz(m_gam_swim)
+check(viz_swim,
+      a.qq = list(method = "tnorm", a.cipoly = list(fill = "light blue")), 
+      a.respoi = list(size = 0.5), 
+      a.hist = list(bins = 10))
+```
+
+```{r swimmer-plots}
+# Create interaction plot for swimmer model
+SUM_WS_FLIGHT_min_seq <- seq(min(encount_swim_2year_fre$SUM_WS_FLIGHT_min), 
+                             max(encount_swim_2year_fre$SUM_WS_FLIGHT_min), 
+                             length.out = 100)
+SUM_SWIM_FLIGHT_min_seq <- seq(min(encount_swim_2year_fre$SUM_SWIM_FLIGHT_min), 
+                               max(encount_swim_2year_fre$SUM_SWIM_FLIGHT_min), 
+                               length.out = 100)
+
+grid_swim <- expand.grid(SUM_WS_FLIGHT_min = SUM_WS_FLIGHT_min_seq,
+                        SUM_SWIM_FLIGHT_min = SUM_SWIM_FLIGHT_min_seq,
+                        RATIO_WS_SWIM_min = mean(encount_swim_2year_fre$RATIO_WS_SWIM_min),
+                        DATE = factor(levels(encount_swim_2year_fre$DATE)[1]))
+
+pred_swim <- predict.gam(model_swim_1, newdata = grid_swim, type = "link", se.fit = TRUE, exclude = "s(DATE)")
+
+grid_swim$fit_link <- pred_swim$fit
+grid_swim$se.fit <- pred_swim$se.fit
+grid_swim$lower_link <- grid_swim$fit_link - 1.96 * grid_swim$se.fit
+grid_swim$upper_link <- grid_swim$fit_link + 1.96 * grid_swim$se.fit
+
+inverse_link <- family(model_swim_1)$linkinv
+grid_swim$fit_response <- inverse_link(grid_swim$fit_link)
+grid_swim$lower_response <- inverse_link(grid_swim$lower_link)
+grid_swim$upper_response <- inverse_link(grid_swim$upper_link)
+
+plot_interaction_swim <- ggplot(grid_swim, aes(x = SUM_WS_FLIGHT_min, y = SUM_SWIM_FLIGHT_min, fill = fit_response)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted number of swimmer \nviolations ") +
+  labs(x = "No. of WS", y = "No. of swimmers") +
+  theme_classic() +
+  theme(legend.position = "top",
+        text = element_text(size = 13),       
+        axis.title = element_text(size = 13), 
+        axis.text = element_text(size = 13))
+
+print(plot_interaction_swim)
+
+# Ratio effect plot
+new_data_ratio <- data.frame(
+  RATIO_WS_SWIM_min = seq(min(encount_swim_2year_fre$RATIO_WS_SWIM_min),
+                          max(encount_swim_2year_fre$RATIO_WS_SWIM_min), length.out = 100),
+  SUM_SWIM_FLIGHT_min = mean(encount_swim_2year_fre$SUM_SWIM_FLIGHT_min),
+  SUM_BOAT_FLIGHT_min = mean(encount_swim_2year_fre$SUM_BOAT_FLIGHT_min),
+  SUM_WS_FLIGHT_min = mean(encount_swim_2year_fre$SUM_WS_FLIGHT_min),
+  DATE = factor(levels(encount_swim_2year_fre$DATE)[1], levels = levels(encount_swim_2year_fre$DATE))
+)
+
+pred_ratio <- predict.gam(m_gam_swim, newdata = new_data_ratio, type = "link", se.fit = TRUE, exclude = "s(DATE)")
+
+new_data_ratio$fit_link <- pred_ratio$fit
+new_data_ratio$se.fit <- pred_ratio$se.fit
+new_data_ratio$lower_link <- new_data_ratio$fit_link - 1.96 * new_data_ratio$se.fit
+new_data_ratio$upper_link <- new_data_ratio$fit_link + 1.96 * new_data_ratio$se.fit
+
+inverse_link <- family(m_gam_swim)$linkinv
+new_data_ratio$fit_response <- inverse_link(new_data_ratio$fit_link)
+new_data_ratio$lower_response <- inverse_link(new_data_ratio$lower_link)
+new_data_ratio$upper_response <- inverse_link(new_data_ratio$upper_link)
+
+plot_ratio <- ggplot(new_data_ratio, aes(x = RATIO_WS_SWIM_min, y = fit_response)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = lower_response, ymax = upper_response), fill = "black", alpha = 0.2) +
+  labs(x = "Ratio of swimmers per WS", y = "Predicted number of swimmer violations ") +
+  theme_bw() +  
+  geom_point(data = encount_swim_2year_fre, aes(x = RATIO_WS_SWIM_min, y = FRE_SWIM_VIOLATION_min), color = "blue") +
+  theme(text = element_text(size = 13),       
+        axis.title = element_text(size = 13), 
+        axis.text = element_text(size = 13))
+
+print(plot_ratio)
+```
+
+```{r combined-plots}
+# Combine plots
+combined_plot <- cowplot::plot_grid(
+  plot_interaction_boat, plot_interaction_swim,
+  labels = "auto", 
+  ncol = 2
+) 
+
+print(combined_plot)
+
+# Save plot
+ggsave("outputs/GAM_output.png", combined_plot, height = 7, width = 9)
+
+# Model summaries
+summary(m_gam_boat) 
+summary(m_gam_swim) 
+```
+
+# Summary
+
+```{r summary-table}
+# Create summary of key findings
+summary_findings <- data.frame(
+  Metric = c(
+    "Whale shark density (per hectare)",
+    "Boat density (per hectare)", 
+    "Swimmer density (per hectare)",
+    "Swimmers per whale shark ratio",
+    "Multiple boats per shark (%)",
+    "4+ swimmers per shark (%)",
+    "Patrol boat not visible (flights)"
+  ),
+  Year_2016 = c(
+    paste0(round(mean(general16$WS_FOOTAGE), 1), " ± ", round(sd(general16$WS_FOOTAGE), 1)),
+    paste0(round(mean(general16$BOAT_FOOTAGE), 1), " ± ", round(sd(general16$BOAT_FOOTAGE), 1)),
+    paste0(round(mean(general16$SWIMMER_FOOTAGE), 1), " ± ", round(sd(general16$SWIMMER_FOOTAGE), 1)),
+    paste0(round(mean(general16_SW_WS$SWIM_WS), 1), " ± ", round(sd(general16_SW_WS$SWIM_WS), 1)),
+    paste0(boat_analysis_2016$percentage, "%"),
+    paste0(swimmer_analysis_2016$percentage, "%"),
+    "N/A"
+  ),
+  Year_2022 = c(
+    paste0(round(mean(general22$WS_FOOTAGE), 1), " ± ", round(sd(general22$WS_FOOTAGE), 1)),
+    paste0(round(mean(general22$BOAT_FOOTAGE), 1), " ± ", round(sd(general22$BOAT_FOOTAGE), 1)),
+    paste0(round(mean(general22$SWIMMER_FOOTAGE), 1), " ± ", round(sd(general22$SWIMMER_FOOTAGE), 1)),
+    paste0(round(mean(general22_SW_WS$SWIM_WS), 1), " ± ", round(sd(general22_SW_WS$SWIM_WS), 1)),
+    paste0(boat_analysis_2022$percentage, "%"),
+    paste0(swimmer_analysis_2022$percentage, "%"),
+    paste0(patrol_absent_flights, "/", total_flights_2022)
+  )
+)
+
+knitr::kable(summary_findings, caption = "Summary of Key Findings")
+
+# Export results
+write.csv(summary_findings, "outputs/whale_shark_analysis_summary.csv", row.names = FALSE)
+write.csv(density_results, "outputs/density_analysis_results.csv", row.names = FALSE)
+```
+

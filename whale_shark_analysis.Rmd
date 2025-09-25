@@ -208,8 +208,13 @@ logbook_2022 <- paste0(round(mean(infield22$Boat_total), 1), " ± ", round(sd(in
 logbook_test <- wilcox.test(infield16_boat$NO_BOAT, infield22$Boat_total)
 
 logbook_results <- data.frame(
-  Metric = "Max boats observed",
-  Max_Boats = max(max(infield16_boat$NO_BOAT), max(infield22$Boat_total))
+  Metric = "Logbook boat counts",
+  Year_2016 = logbook_2016,
+  Year_2022 = logbook_2022,
+  Max_2016 = max(infield16_boat$NO_BOAT),
+  Max_2022 = max(infield22$Boat_total),
+  W_Statistic = logbook_test$statistic,
+  P_Value = format(logbook_test$p.value, scientific = TRUE, digits = 3)
 )
 
 knitr::kable(logbook_results, caption = "Logbook Boat Count Comparisons", row.names = FALSE)

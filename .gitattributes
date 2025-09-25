@@ -1,0 +1,5 @@
+*.csv linguist-detectable=false
+*.css linguist-detectable=false
+*.Rproj linguist-detectable=false
+*.Rmd linguist-language=R
+*.R linguist-language=R

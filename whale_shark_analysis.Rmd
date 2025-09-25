@@ -86,12 +86,9 @@ convert_time_format <- function(time_int) {
   paste0(minutes, ":", seconds)
 }
 
-# Apply time conversion to all datasets
-time_datasets <- list(general22, general16, boat22, boat16, swim22, swim16)
-for(i in seq_along(time_datasets)) {
-  time_datasets[[i]]$V_LENGTH <- sapply(time_datasets[[i]]$V_LENGTH, convert_time_format)
-}
-list2env(setNames(time_datasets, c("general22", "general16", "boat22", "boat16", "swim22", "swim16")), envir = .GlobalEnv)
+# Apply time conversion to datasets that have V_LENGTH column
+general22$V_LENGTH <- sapply(general22$V_LENGTH, convert_time_format)
+general16$V_LENGTH <- sapply(general16$V_LENGTH, convert_time_format)
 ```
 
 # Study Effort

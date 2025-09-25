@@ -112,7 +112,7 @@ duration_2016 <- general16 %>%
 
 duration_2022 <- general22 %>%
   mutate(V_LENGTH_SECOND = as.numeric(lubridate::ms(V_LENGTH))) %>%
-  group_by(FLIGHT) %>%
+  group_by(FLIGHT_C) %>%
   summarise(
     FLIGHT = first(FLIGHT),
     V_LENGTH_SECOND = first(V_LENGTH_SECOND),

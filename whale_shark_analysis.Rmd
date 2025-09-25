@@ -386,7 +386,7 @@ touch_freq_test <- wilcox.test(swim_freq_2016$FRE_TOUCH_min, swim_freq_2022$FRE_
 
 # Frequency analysis results
 frequency_results <- data.frame(
-  Violation_Type = c("Boat distance violations", "Swimmer distance violations", "Touching violations"),
+  Violation_Type = c("Boat distance violations", "Swimmer distance violations (max 24 < 5m)", "Touching violations"),
   Year_2016 = c(
     paste0(round(mean(boat_freq_2016$FRE_BOAT_VIOLATION_min), 1), " ± ", round(sd(boat_freq_2016$FRE_BOAT_VIOLATION_min), 1)),
     paste0(round(mean(swim_freq_2016$FRE_SWIM_VIOLATION_min), 1), " ± ", round(sd(swim_freq_2016$FRE_SWIM_VIOLATION_min), 1)),

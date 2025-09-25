@@ -650,14 +650,14 @@ grid_boat <- expand.grid(SUM_WS_FLIGHT_min = SUM_WS_FLIGHT_min_seq,
                         RATIO_WS_SWIM_min = mean(encount_boat_2year_fre$RATIO_WS_SWIM_min),
                         DATE = factor(levels(encount_boat_2year_fre$DATE)[1]))
 
-pred_boat <- predict.gam(model_2, newdata = grid_boat, type = "link", se.fit = TRUE, exclude = "s(DATE)")
+pred_boat <- predict.gam(m_gam_boat, newdata = grid_boat, type = "link", se.fit = TRUE, exclude = "s(DATE)")
 
 grid_boat$fit_link <- pred_boat$fit
 grid_boat$se.fit <- pred_boat$se.fit
 grid_boat$lower_link <- grid_boat$fit_link - 1.96 * grid_boat$se.fit
 grid_boat$upper_link <- grid_boat$fit_link + 1.96 * grid_boat$se.fit
 
-inverse_link <- family(model_2)$linkinv
+inverse_link <- family(m_gam_boat)$linkinv
 grid_boat$fit_response <- inverse_link(grid_boat$fit_link)
 grid_boat$lower_response <- inverse_link(grid_boat$lower_link)
 grid_boat$upper_response <- inverse_link(grid_boat$upper_link)
@@ -832,14 +832,14 @@ grid_swim <- expand.grid(SUM_WS_FLIGHT_min = SUM_WS_FLIGHT_min_seq,
                         RATIO_WS_SWIM_min = mean(encount_swim_2year_fre$RATIO_WS_SWIM_min),
                         DATE = factor(levels(encount_swim_2year_fre$DATE)[1]))
 
-pred_swim <- predict.gam(model_swim_1, newdata = grid_swim, type = "link", se.fit = TRUE, exclude = "s(DATE)")
+pred_swim <- predict.gam(m_gam_swim, newdata = grid_swim, type = "link", se.fit = TRUE, exclude = "s(DATE)")
 
 grid_swim$fit_link <- pred_swim$fit
 grid_swim$se.fit <- pred_swim$se.fit
 grid_swim$lower_link <- grid_swim$fit_link - 1.96 * grid_swim$se.fit
 grid_swim$upper_link <- grid_swim$fit_link + 1.96 * grid_swim$se.fit
 
-inverse_link <- family(model_swim_1)$linkinv
+inverse_link <- family(m_gam_swim)$linkinv
 grid_swim$fit_response <- inverse_link(grid_swim$fit_link)
 grid_swim$lower_response <- inverse_link(grid_swim$lower_link)
 grid_swim$upper_response <- inverse_link(grid_swim$upper_link)

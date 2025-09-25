@@ -17,12 +17,6 @@ This project analyzes whale shark tourism compliance data to understand patterns
   - `Infield2016_no_boats.csv` - 2016 boat count data over time
   - `encount_boat_2year_fre.csv`, `encount_swim_2year_fre.csv` - Encounter frequency summaries
 
-## Analysis Components
-
-- Compliance violation comparisons between 2016 and 2022
-- Spatial analysis of boat and swimmer densities
-- Statistical modeling using Generalized Additive Models (GAM)
-- Temporal pattern analysis
 
 ## Usage
 

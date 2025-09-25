@@ -1,0 +1,11 @@
+"Model","No_of_WS","Ratio_swimmers_per_WS","No_of_swimmers","WS_swimmers_Interaction","Sampling_day","AIC"
+"Model_1","X","X","X","X","X",73.32
+"Model_2","X","","X","X","X",74.42
+"Model_4","X","","X","","X",101.77
+"Model_3","X","X","X","","X",103.82
+"Model_8","","","X","","X",103.83
+"Model_6","","X","X","","X",104.04
+"Model_5","X","X","","","X",180.79
+"Model_7","X","","","","X",233.64
+"Model_9","","X","","","X",280
+"Model_10","","","","","X",287.12
